@@ -25,17 +25,21 @@ env/
 .ipynb_checkpoints
 
 # YOLOv11 Training Outputs
-runs/
-weights/
-*.pt
+runs/detect/
+runs/train/*/train_batch*.jpg
+runs/train/*/val_batch*.jpg
 *.pth
 *.onnx
 *.torchscript
 *.tflite
 *.engine
 
-# Keep only best model (comment out if you want to track it)
-# !runs/train/accident_severity_yolov11/weights/best.pt
+# Keep best model and important training artifacts
+!runs/train/accident_severity_yolov11/weights/best.pt
+!runs/train/accident_severity_yolov11/weights/last.pt
+!runs/train/accident_severity_yolov11/*.png
+!runs/train/accident_severity_yolov11/*.csv
+!runs/train/accident_severity_yolov11/*.yaml
 
 # Dataset (too large for git)
 train/images/
