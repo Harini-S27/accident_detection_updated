@@ -1,0 +1,79 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# YOLOv11 Training Outputs
+runs/
+weights/
+*.pt
+*.pth
+*.onnx
+*.torchscript
+*.tflite
+*.engine
+
+# Keep only best model (comment out if you want to track it)
+# !runs/train/accident_severity_yolov11/weights/best.pt
+
+# Dataset (too large for git)
+train/images/
+valid/images/
+test/images/
+*.jpg
+*.jpeg
+*.png
+*.mp4
+*.avi
+*.mov
+
+# Keep README files
+!README*.txt
+!README*.md
+
+# Cache files
+*.cache
+.cache/
+*.db
+
+# Logs
+*.log
+log.txt
+*.txt.log
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+~*
+
+# Large data files
+*.zip
+*.tar
+*.gz
+*.rar
