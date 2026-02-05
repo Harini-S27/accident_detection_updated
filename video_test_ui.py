@@ -10,6 +10,14 @@ import threading
 from ultralytics import YOLO
 import cv2
 import os
+# Import Twilio SMS (optional - UI will work without it)
+try:
+    from twilio_sms import TwilioSMSAlert
+    TWILIO_AVAILABLE = True
+except Exception as e:
+    print(f"[Warning] Twilio SMS not available: {e}")
+    TWILIO_AVAILABLE = False
+    TwilioSMSAlert = None
 
 class AccidentDetectionUI:
     def __init__(self, root):
@@ -22,6 +30,15 @@ class AccidentDetectionUI:
         self.model_path = "runs/train/accident_severity_yolov11/weights/best.pt"
         self.video_path = None
         self.output_path = None
+        
+        # Initialize Twilio SMS alert system
+        self.sms_alert = None
+        if TWILIO_AVAILABLE and TwilioSMSAlert:
+            try:
+                self.sms_alert = TwilioSMSAlert('twilio_config.json')
+            except Exception as e:
+                print(f"[SMS] Failed to initialize SMS alerts: {e}")
+                self.sms_alert = None
         
         # Create UI
         self.create_widgets()
@@ -216,9 +233,30 @@ class AccidentDetectionUI:
     
     def run_inference(self):
         try:
-            # Load model
+            # Load model with error handling for version compatibility
             self.update_status("Loading model...")
-            model = YOLO(self.model_path)
+            try:
+                model = YOLO(self.model_path)
+            except (AttributeError, RuntimeError, Exception) as model_error:
+                error_str = str(model_error)
+                # Check if it's a version compatibility issue
+                if 'C3k2' in error_str or 'Can\'t get attribute' in error_str:
+                    self.update_status("Model version mismatch - using default model...")
+                    # Fallback to pretrained model
+                    fallback_model = 'yolo11n.pt'
+                    if os.path.exists(fallback_model):
+                        model = YOLO(fallback_model)
+                        self.root.after(0, lambda: messagebox.showwarning(
+                            "Model Compatibility Warning",
+                            f"Your trained model requires a different Ultralytics version.\n"
+                            f"Using default model ({fallback_model}) for now.\n\n"
+                            f"To fix: Update ultralytics to match training version:\n"
+                            f"pip install --upgrade ultralytics"
+                        ))
+                    else:
+                        raise Exception("Could not load model and fallback not available")
+                else:
+                    raise model_error
             
             # Run inference
             self.update_status("Detecting accidents in video...")
@@ -264,6 +302,7 @@ class AccidentDetectionUI:
             moderate_count = sum(1 for d in detections if d['class'] == 'moderate')
             severe_count = sum(1 for d in detections if d['class'] == 'severe')
             
+            # Build results text with accident alert
             results_text = (
                 f"✅ Processing complete!\n"
                 f"📊 Frames processed: {frame_count}\n"
@@ -271,7 +310,10 @@ class AccidentDetectionUI:
                 f"🔥 Fire: {fire_count} | ⚠️ Moderate: {moderate_count} | 🚨 Severe: {severe_count}"
             )
             
-            self.root.after(0, self.processing_complete, results_text)
+            # Pass all parameters to processing_complete
+            video_name = Path(self.video_path).name if self.video_path else "Unknown"
+            self.root.after(0, self.processing_complete, results_text, severe_count, 
+                          fire_count, moderate_count, frame_count, video_name)
             
         except Exception as e:
             error_msg = f"Error: {str(e)}"
@@ -280,20 +322,126 @@ class AccidentDetectionUI:
     def update_status(self, message):
         self.root.after(0, lambda: self.status_label.config(text=message))
     
-    def processing_complete(self, results_text):
+    def processing_complete(self, results_text, severe_count=0, 
+                          fire_count=0, moderate_count=0, frame_count=0, video_name="Unknown"):
         self.progress.stop()
         self.status_label.config(text="✅ Success!", fg='#4CAF50')
-        self.results_label.config(text=results_text, fg='#333333')
+        
+        # Check if severe accident detected (severe_count >= 1)
+        if severe_count >= 1:
+            # Display ACCIDENT DETECTED prominently in bold
+            accident_alert = "⚠️ ACCIDENT DETECTED ⚠️"
+            full_results = f"{accident_alert}\n\n{results_text}"
+            
+            # Configure results label with bold red styling
+            self.results_label.config(
+                text=full_results,
+                fg='#FF0000',
+                font=("Arial", 12, "bold"),
+                justify=tk.LEFT
+            )
+        else:
+            # Normal results display
+            self.results_label.config(
+                text=results_text,
+                fg='#333333',
+                font=("Arial", 9),
+                justify=tk.LEFT
+            )
+        
         self.upload_btn.config(state=tk.NORMAL)
         self.process_btn.config(state=tk.NORMAL)
         
         if self.output_path:
             self.open_btn.pack(pady=10)
         
-        messagebox.showinfo(
-            "Success",
-            "Video processing complete!\n\n" + results_text
-        )
+        # Handle SMS alerts when severe accident detected
+        if severe_count >= 1:
+            if self.sms_alert and self.sms_alert.enabled:
+                # SMS is enabled - send alert
+                try:
+                    # Send SMS alert in background thread to avoid blocking UI
+                    import threading
+                    def send_sms():
+                        print("\n[SMS] Severe accident detected - Sending SMS alerts...")
+                        sms_results = self.sms_alert.send_accident_alert(
+                            video_name=video_name,
+                            frame_count=frame_count,
+                            fire_count=fire_count,
+                            moderate_count=moderate_count,
+                            severe_count=severe_count
+                        )
+                        
+                        # Update UI with SMS status
+                        if sms_results:
+                            success_count = sum(1 for r in sms_results if r['status'] == 'success')
+                            failed_count = sum(1 for r in sms_results if r['status'] == 'failed')
+                            
+                            if success_count > 0:
+                                sms_message = f"✅ Success! SMS sent to {success_count} contact(s)"
+                                if failed_count > 0:
+                                    sms_message += f" (Failed: {failed_count})"
+                                
+                                # Get contact names
+                                contact_phones = [r['phone'] for r in sms_results if r['status'] == 'success']
+                                if contact_phones:
+                                    sms_message += f"\n📱 Sent to: {', '.join(contact_phones)}"
+                                
+                                self.root.after(0, lambda msg=sms_message: self.status_label.config(
+                                    text=msg,
+                                    fg='#4CAF50',
+                                    font=("Arial", 10, "bold")
+                                ))
+                            elif failed_count > 0:
+                                # All failed
+                                self.root.after(0, lambda: self.status_label.config(
+                                    text=f"❌ SMS failed to send to {failed_count} contact(s). Check Twilio credentials.",
+                                    fg='#FF0000',
+                                    font=("Arial", 10, "bold")
+                                ))
+                    
+                    sms_thread = threading.Thread(target=send_sms)
+                    sms_thread.daemon = True
+                    sms_thread.start()
+                except Exception as e:
+                    print(f"[SMS] Error sending SMS: {e}")
+                    self.root.after(0, lambda: self.status_label.config(
+                        text=f"❌ SMS Error: {str(e)[:50]}",
+                        fg='#FF0000'
+                    ))
+            else:
+                # SMS is disabled - show warning in UI
+                sms_status = "⚠️ SMS Alerts Disabled - Twilio not configured"
+                if self.sms_alert:
+                    sms_status += f"\n📱 Contact: +918248450441 (configure in twilio_config.json)"
+                
+                # Update status label
+                current_status = self.status_label.cget('text')
+                if current_status and current_status != "✅ Success!":
+                    new_status = f"{current_status}\n{sms_status}"
+                else:
+                    new_status = sms_status
+                
+                self.status_label.config(
+                    text=new_status,
+                    fg='#FF8800',
+                    font=("Arial", 9, "bold")
+                )
+                
+                print(f"[SMS] Severe accident detected but SMS alerts are disabled")
+                print(f"[SMS] Please configure twilio_config.json with your Twilio credentials")
+        
+        # Show warning dialog if severe accident detected
+        if severe_count >= 1:
+            messagebox.showwarning(
+                "⚠️ ACCIDENT DETECTED ⚠️",
+                "SEVERE ACCIDENT DETECTED IN VIDEO!\n\n" + results_text
+            )
+        else:
+            messagebox.showinfo(
+                "Success",
+                "Video processing complete!\n\n" + results_text
+            )
     
     def processing_error(self, error_msg):
         self.progress.stop()
@@ -309,9 +457,61 @@ class AccidentDetectionUI:
             messagebox.showwarning("File Not Found", "Output video file not found!")
 
 def main():
-    root = tk.Tk()
-    app = AccidentDetectionUI(root)
-    root.mainloop()
+    try:
+        print("=" * 70)
+        print("Starting Accident Detection UI...")
+        print("=" * 70)
+        print()
+        
+        root = tk.Tk()
+        print("✓ Tkinter window created")
+        
+        # Set window properties
+        root.title("Accident Severity Detection - Video Tester")
+        root.geometry("700x500")
+        
+        # Center window on screen
+        root.update_idletasks()
+        width = 700
+        height = 500
+        x = (root.winfo_screenwidth() // 2) - (width // 2)
+        y = (root.winfo_screenheight() // 2) - (height // 2)
+        root.geometry(f'{width}x{height}+{x}+{y}')
+        
+        # Bring window to front
+        root.lift()
+        root.attributes('-topmost', True)
+        root.after_idle(root.attributes, '-topmost', False)
+        
+        print("✓ Window positioned and brought to front")
+        print()
+        print("Creating UI components...")
+        try:
+            app = AccidentDetectionUI(root)
+            print("✓ UI components created")
+        except Exception as e:
+            print(f"❌ ERROR creating UI components: {e}")
+            import traceback
+            traceback.print_exc()
+            input("\nPress Enter to exit...")
+            return
+        print()
+        print("=" * 70)
+        print("UI WINDOW SHOULD BE VISIBLE NOW!")
+        print("If you don't see it, check:")
+        print("  - Taskbar for minimized window")
+        print("  - Press Alt+Tab to switch windows")
+        print("=" * 70)
+        print()
+        
+        root.mainloop()
+        
+    except Exception as e:
+        print(f"\n❌ ERROR: Failed to start UI")
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+        input("\nPress Enter to exit...")
 
 if __name__ == "__main__":
     main()

@@ -81,3 +81,8 @@ desktop.ini
 *.tar
 *.gz
 *.rar
+
+# Sensitive configuration files
+twilio_config.json
+*.env
+.env
