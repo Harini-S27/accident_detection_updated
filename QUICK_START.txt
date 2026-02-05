@@ -1,0 +1,49 @@
+===============================================
+  QUICK START - ACCIDENT DETECTION PROJECT
+===============================================
+
+METHOD 1: Double-Click Batch File
+----------------------------------
+1. Double-click: START.bat
+   OR
+2. Double-click: RUN_UI.bat
+
+If batch file doesn't work, try METHOD 2 below.
+
+METHOD 2: Command Prompt (Always Works)
+----------------------------------------
+1. Open Command Prompt (cmd)
+2. Navigate to project folder:
+   cd C:\Users\27har\cursor_clg_project\Accident-Detection
+3. Run:
+   python video_test_ui.py
+
+METHOD 3: PowerShell
+---------------------
+1. Open PowerShell
+2. Navigate to project folder:
+   cd C:\Users\27har\cursor_clg_project\Accident-Detection
+3. Run:
+   python video_test_ui.py
+
+METHOD 4: Right-Click and Run
+------------------------------
+1. Right-click on video_test_ui.py
+2. Select "Open with" → "Python"
+   OR
+3. Right-click on RUN_UI.bat
+4. Select "Run as administrator"
+
+TROUBLESHOOTING
+---------------
+If batch file doesn't work:
+- Windows might be blocking it
+- Right-click → Properties → Unblock
+- Or use Command Prompt method (METHOD 2)
+
+If Python not found:
+- Make sure Python is installed
+- Add Python to PATH
+- Or use full path: C:\Python\python.exe video_test_ui.py
+
+===============================================

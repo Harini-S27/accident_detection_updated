@@ -30,6 +30,8 @@ class AccidentDetectionUI:
         self.model_path = "runs/train/accident_severity_yolov11/weights/best.pt"
         self.video_path = None
         self.output_path = None
+        self.live_detection_active = False
+        self.live_detection_thread = None
         
         # Initialize Twilio SMS alert system
         self.sms_alert = None
@@ -82,7 +84,23 @@ class AccidentDetectionUI:
             relief=tk.RAISED,
             borderwidth=3
         )
-        self.upload_btn.pack()
+        self.upload_btn.pack(side=tk.LEFT, padx=10)
+        
+        # Live Detection button
+        self.live_detection_btn = tk.Button(
+            file_frame,
+            text="🔴 Live Detection",
+            command=self.start_live_detection,
+            font=("Arial", 12, "bold"),
+            bg='#FF5722',
+            fg='white',
+            padx=30,
+            pady=15,
+            cursor='hand2',
+            relief=tk.RAISED,
+            borderwidth=3
+        )
+        self.live_detection_btn.pack(side=tk.LEFT, padx=10)
         
         # Selected file label
         self.file_label = tk.Label(
@@ -191,6 +209,309 @@ class AccidentDetectionUI:
         
     def update_conf_label(self, *args):
         self.conf_value.config(text=f"{self.conf_var.get():.1f}")
+    
+    def start_live_detection(self):
+        """Start live camera detection"""
+        if self.live_detection_active:
+            messagebox.showinfo("Already Running", "Live detection is already active!")
+            return
+        
+        # Confirm camera access
+        response = messagebox.askyesno(
+            "Live Detection",
+            "This will open your camera for real-time accident detection.\n\n"
+            "Continue?"
+        )
+        if not response:
+            return
+        
+        # Disable buttons
+        self.upload_btn.config(state=tk.DISABLED)
+        self.live_detection_btn.config(state=tk.DISABLED, text="🔴 Live Detection (Running...)")
+        self.process_btn.config(state=tk.DISABLED)
+        
+        # Update status
+        self.status_label.config(text="🔴 Live Detection Active - Camera opening...", fg='#FF5722')
+        self.results_label.config(text="", fg='#333333')
+        self.progress.start(10)
+        
+        # Start live detection in separate thread
+        self.live_detection_active = True
+        self.live_detection_thread = threading.Thread(target=self.run_live_detection)
+        self.live_detection_thread.daemon = True
+        self.live_detection_thread.start()
+    
+    def run_live_detection(self):
+        """Run live detection from camera"""
+        cap = None
+        model = None
+        
+        try:
+            # Load model
+            self.update_status("Loading model for live detection...")
+            try:
+                model = YOLO(self.model_path)
+            except (AttributeError, RuntimeError, Exception) as model_error:
+                error_str = str(model_error)
+                if 'C3k2' in error_str or 'Can\'t get attribute' in error_str:
+                    fallback_model = 'yolo11n.pt'
+                    if os.path.exists(fallback_model):
+                        model = YOLO(fallback_model)
+                    else:
+                        raise Exception("Could not load model")
+                else:
+                    raise model_error
+            
+            # Open camera (front camera - index 0)
+            self.update_status("Opening front camera...")
+            cap = cv2.VideoCapture(0)
+            
+            if not cap.isOpened():
+                raise Exception("Could not open camera. Make sure camera is connected and not used by another application.")
+            
+            # Set camera properties for better quality
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            cap.set(cv2.CAP_PROP_FPS, 30)
+            
+            self.update_status("🔴 Live Detection Active - Camera window opening...")
+            conf_threshold = self.conf_var.get()
+            
+            # Create named window and set properties
+            window_name = 'Accident Detection - Live Camera Feed'
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(window_name, 800, 600)
+            cv2.moveWindow(window_name, 100, 100)  # Position window
+            
+            frame_count = 0
+            detections = []
+            severe_detected = False
+            sms_sent = False
+            
+            # Process frames
+            while self.live_detection_active:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                
+                frame_count += 1
+                
+                # Run inference on frame
+                results = model.predict(
+                    source=frame,
+                    conf=conf_threshold,
+                    verbose=False
+                )
+                
+                # Process detections
+                for r in results:
+                    boxes = r.boxes
+                    frame_severe = False
+                    
+                    for box in boxes:
+                        cls = int(box.cls[0])
+                        conf = float(box.conf[0])
+                        class_names = ['fire', 'moderate', 'severe']
+                        class_name = class_names[cls]
+                        
+                        detections.append({
+                            'frame': frame_count,
+                            'class': class_name,
+                            'confidence': conf
+                        })
+                        
+                        if class_name == 'severe':
+                            frame_severe = True
+                            severe_detected = True
+                    
+                    # Draw detections on frame
+                    annotated_frame = r.plot()
+                    
+                    # Add status text overlay on video
+                    status_text = "LIVE DETECTION - Press 'Q' to stop"
+                    text_color = (0, 255, 0)  # Green for normal
+                    if frame_severe:
+                        status_text = "SEVERE ACCIDENT DETECTED!"
+                        text_color = (0, 0, 255)  # Red for severe
+                    
+                    # Add text background for better visibility
+                    (text_width, text_height), baseline = cv2.getTextSize(status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+                    cv2.rectangle(annotated_frame, (5, 5), (text_width + 15, text_height + 20), (0, 0, 0), -1)
+                    cv2.putText(annotated_frame, status_text, (10, 30),
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2)
+                    
+                    # Add frame count and detection info
+                    info_text = f"Frame: {frame_count} | Detections: {len(boxes)}"
+                    cv2.putText(annotated_frame, info_text, (10, annotated_frame.shape[0] - 10),
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                    
+                    # Display frame in the named window
+                    cv2.imshow(window_name, annotated_frame)
+                    
+                    # Bring window to front (Windows specific)
+                    try:
+                        import win32gui
+                        import win32con
+                        hwnd = win32gui.FindWindow(None, window_name)
+                        if hwnd:
+                            win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0, 
+                                                 win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
+                            win32gui.SetWindowPos(hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0, 
+                                                 win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
+                            win32gui.BringWindowToTop(hwnd)
+                    except:
+                        pass  # If win32gui not available, continue without it
+                    
+                    # Check for severe accident and send SMS (once)
+                    if severe_detected and not sms_sent:
+                        # Calculate counts
+                        fire_count = sum(1 for d in detections if d['class'] == 'fire')
+                        moderate_count = sum(1 for d in detections if d['class'] == 'moderate')
+                        severe_count = sum(1 for d in detections if d['class'] == 'severe')
+                        
+                        # Update UI with accident alert
+                        self.root.after(0, self.update_live_accident_detected, 
+                                      frame_count, fire_count, moderate_count, severe_count)
+                        
+                        # Send SMS alert
+                        if self.sms_alert and self.sms_alert.enabled:
+                            try:
+                                self.sms_alert.send_accident_alert(
+                                    video_name="Live Camera Feed",
+                                    frame_count=frame_count,
+                                    fire_count=fire_count,
+                                    moderate_count=moderate_count,
+                                    severe_count=severe_count
+                                )
+                                sms_sent = True
+                            except Exception as e:
+                                print(f"[SMS] Error sending SMS: {e}")
+                
+                # Check for 'q' or ESC key to stop (waitKey is needed to update window)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q') or key == 27:  # 'q' or ESC to stop
+                    break
+                
+                # Check if window was closed by user
+                try:
+                    if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
+                        break
+                except:
+                    # Window might have been closed
+                    break
+                
+                # Update UI with current stats every 30 frames
+                if frame_count % 30 == 0:
+                    fire_count = sum(1 for d in detections if d['class'] == 'fire')
+                    moderate_count = sum(1 for d in detections if d['class'] == 'moderate')
+                    severe_count = sum(1 for d in detections if d['class'] == 'severe')
+                    
+                    self.root.after(0, self.update_live_status, 
+                                  frame_count, fire_count, moderate_count, severe_count)
+            
+            # Cleanup
+            cv2.destroyAllWindows()
+            
+            # Final update
+            fire_count = sum(1 for d in detections if d['class'] == 'fire')
+            moderate_count = sum(1 for d in detections if d['class'] == 'moderate')
+            severe_count = sum(1 for d in detections if d['class'] == 'severe')
+            
+            self.root.after(0, self.live_detection_complete, 
+                          frame_count, fire_count, moderate_count, severe_count)
+            
+        except Exception as e:
+            error_msg = f"Live detection error: {str(e)}"
+            print(f"[Live Detection] {error_msg}")
+            self.root.after(0, self.live_detection_error, error_msg)
+        finally:
+            if cap is not None:
+                cap.release()
+            cv2.destroyAllWindows()
+            self.live_detection_active = False
+    
+    def update_live_status(self, frame_count, fire_count, moderate_count, severe_count):
+        """Update UI with live detection status"""
+        status_text = f"🔴 Live: {frame_count} frames | Fire: {fire_count} | Moderate: {moderate_count} | Severe: {severe_count}"
+        self.status_label.config(text=status_text, fg='#FF5722')
+    
+    def update_live_accident_detected(self, frame_count, fire_count, moderate_count, severe_count):
+        """Update UI when severe accident detected in live feed"""
+        # Display ACCIDENT DETECTED prominently
+        accident_alert = "⚠️ ACCIDENT DETECTED ⚠️"
+        results_text = (
+            f"{accident_alert}\n\n"
+            f"🔴 LIVE DETECTION\n"
+            f"📊 Frames processed: {frame_count}\n"
+            f"🔍 Total detections: {fire_count + moderate_count + severe_count}\n"
+            f"🔥 Fire: {fire_count} | ⚠️ Moderate: {moderate_count} | 🚨 Severe: {severe_count}"
+        )
+        
+        self.results_label.config(
+            text=results_text,
+            fg='#FF0000',
+            font=("Arial", 12, "bold"),
+            justify=tk.LEFT
+        )
+        
+        self.status_label.config(
+            text="⚠️ SEVERE ACCIDENT DETECTED IN LIVE FEED! ⚠️",
+            fg='#FF0000',
+            font=("Arial", 11, "bold")
+        )
+        
+        # Show warning dialog
+        messagebox.showwarning(
+            "⚠️ ACCIDENT DETECTED ⚠️",
+            f"SEVERE ACCIDENT DETECTED IN LIVE CAMERA FEED!\n\n"
+            f"Frames: {frame_count}\n"
+            f"Severe: {severe_count}\n"
+            f"Moderate: {moderate_count}\n"
+            f"Fire: {fire_count}\n\n"
+            f"SMS alert has been sent!"
+        )
+    
+    def live_detection_complete(self, frame_count, fire_count, moderate_count, severe_count):
+        """Called when live detection stops"""
+        self.progress.stop()
+        self.live_detection_active = False
+        
+        # Re-enable buttons
+        self.upload_btn.config(state=tk.NORMAL)
+        self.live_detection_btn.config(state=tk.NORMAL, text="🔴 Live Detection")
+        self.process_btn.config(state=tk.NORMAL)
+        
+        # Final status
+        if severe_count >= 1:
+            self.status_label.config(
+                text=f"✅ Live detection stopped. Severe accidents detected: {severe_count}",
+                fg='#FF0000'
+            )
+        else:
+            self.status_label.config(
+                text=f"✅ Live detection stopped. Frames processed: {frame_count}",
+                fg='#4CAF50'
+            )
+        
+        messagebox.showinfo(
+            "Live Detection Complete",
+            f"Live detection stopped.\n\n"
+            f"Frames processed: {frame_count}\n"
+            f"Fire: {fire_count} | Moderate: {moderate_count} | Severe: {severe_count}"
+        )
+    
+    def live_detection_error(self, error_msg):
+        """Handle live detection errors"""
+        self.progress.stop()
+        self.live_detection_active = False
+        
+        # Re-enable buttons
+        self.upload_btn.config(state=tk.NORMAL)
+        self.live_detection_btn.config(state=tk.NORMAL, text="🔴 Live Detection")
+        self.process_btn.config(state=tk.NORMAL)
+        
+        self.status_label.config(text=f"❌ Error: {error_msg[:50]}", fg='#f44336')
+        messagebox.showerror("Live Detection Error", error_msg)
         
     def select_video(self):
         filetypes = (
